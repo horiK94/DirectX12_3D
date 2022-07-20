@@ -2,6 +2,7 @@
 #include <cassert>
 #include <iostream>
 #include <cmath>
+#include <algorithm>
 using namespace std;
 
 namespace
@@ -28,14 +29,9 @@ App::App(uint32_t width, uint32_t height)
 	, m_hWnd(nullptr)
 	, m_Width(width)
 	, m_Height(height)
-	, m_pDevice(nullptr)
-	, m_pQueue(nullptr)
-	, m_pSwapChain(nullptr)
-	, m_pCmdList(nullptr)
-	, m_pHeapRTV(nullptr)
-	, m_pFence(nullptr)
 	, m_FrameIndex(0) 
 {
+	std::fill(std::begin(m_FenceCounter), std::end(m_FenceCounter), 0);
 }
 
 App::~App()
@@ -584,4 +580,90 @@ void App::TermWnd()
 
 	m_hInst = nullptr;
 	m_hWnd = nullptr;
+}
+
+bool App::OnInit()
+{
+	//頂点バッファの生成
+	Vertex vertex[] = {
+		{DirectX::XMFLOAT3(-1.0f, -1.0f, 0.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f)},
+		{DirectX::XMFLOAT3(1.0f, -1.0f, 0.0f),	DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 0.0f)},
+		{DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f),	DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f)},
+	};
+
+	//リソースの生成
+	//DirectX12ではGPUに頂点を送る際にバッファを作成し纏めて送る
+	//頂点では頂点バッファをID3D12Resourceオブジェクトで生成し、
+	//頂点バッファの設定をD3D12_VERTEX_BUFFER_VIEW構造体に設定する
+
+	//ID3D12Resourceの生成にはCreateCommittedResource()を用いる
+	/*
+	HRESULT CreateCommittedResource(
+  [in]            const D3D12_HEAP_PROPERTIES *pHeapProperties,
+  [in]            D3D12_HEAP_FLAGS            HeapFlags,
+  [in]            const D3D12_RESOURCE_DESC   *pDesc,
+  [in]            D3D12_RESOURCE_STATES       InitialResourceState,
+  [in, optional]  const D3D12_CLEAR_VALUE     *pOptimizedClearValue,
+  [in]            REFIID                      riidResource,
+  [out, optional] void                        **ppvResource
+);
+	*/
+
+	//D3D12_HEAP_PROPERTIESの設定
+	/*
+	typedef struct D3D12_HEAP_PROPERTIES {
+  D3D12_HEAP_TYPE         Type;
+  D3D12_CPU_PAGE_PROPERTY CPUPageProperty;
+  D3D12_MEMORY_POOL       MemoryPoolPreference;
+  UINT                    CreationNodeMask;
+  UINT                    VisibleNodeMask;
+} D3D12_HEAP_PROPERTIES;
+	*/
+	D3D12_HEAP_PROPERTIES prop = {};
+	prop.Type = D3D12_HEAP_TYPE_UPLOAD;		//CPUが書き込み1回、GPUが読み込み1回のときに使用. このとき D3D12_RESOURCE_STATESは D3D12_RESOURCE_STATE_GENERIC_READにする必要あり
+	prop.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;		//メモリへの書き出し方法を指定
+	prop.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;		//データ領域確保時に、どのメモリープールを用いるか指定する
+	prop.CreationNodeMask = 1;		//複数GPUがある際、どのGPUにリソースを生成するかを指定
+	prop.VisibleNodeMask = 1;		//複数GPUがある際、どのGPUのリソースを可視化するかを指定(可視化とは？)
+
+	D3D12_RESOURCE_DESC desc = {};
+	/*
+	typedef struct D3D12_RESOURCE_DESC {
+  D3D12_RESOURCE_DIMENSION Dimension;
+  UINT64                   Alignment;
+  UINT64                   Width;
+  UINT                     Height;
+  UINT16                   DepthOrArraySize;
+  UINT16                   MipLevels;
+  DXGI_FORMAT              Format;
+  DXGI_SAMPLE_DESC         SampleDesc;
+  D3D12_TEXTURE_LAYOUT     Layout;
+  D3D12_RESOURCE_FLAGS     Flags;
+} D3D12_RESOURCE_DESC;
+	*/
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;		//リソースの次元を指定
+	desc.Alignment = 0;
+	desc.Width = sizeof(vertex);	 //バッファの場合はサイズ、テクスチャの場合は横幅を指定
+	desc.Height = 1;		//バッファの場合は1. テクスチャの場合は縦幅
+	desc.DepthOrArraySize = 1;		//バッファの場合は1, 3次元テクスチャの場合は奥行き、配列テクスチャの場合は要素数を指定
+	desc.MipLevels = 1;	//ミップレベル数を指定. バッファの場合は1を指定
+	desc.Format = DXGI_FORMAT_UNKNOWN;		//バッファの場合はDXGI_FORMAT_UNKNOWN を指定
+	desc.SampleDesc.Count = 1;	//マルチサンプリング数を指定. バッファの場合は1
+	desc.SampleDesc.Quality = 0;	//マルチサンプリングの質を指定. バッファの場合は0
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;		//テクスチャレイアウト. バッファはD3D12_TEXTURE_LAYOUT_ROW_MAJOR を指定する
+	desc.Flags = D3D12_RESOURCE_FLAG_NONE;		//ビット論理和でリソースに対してオプションを付けられる. 特に指定しない場合は D3D12_RESOURCE_FLAG_NONE
+
+	HRESULT hr = m_pDevice->CreateCommittedResource(
+		&prop,
+		D3D12_HEAP_FLAG_NONE,		//ヒープオプションを論理和で指定
+		&desc,
+		D3D12_RESOURCE_STATE_GENERIC_READ,		//リソースの初期状態を指定. D3D12_HEAP_TYPE_UPLOADを指定した場合は ここを D3D12_RESOURCE_STATE_GENERIC_READにする必要がある
+		nullptr,		//レンダーターゲットや深度ステンシルテクスチャ指定時にクリア値を指定するために必要. バッファ指定時はnullptrを設定
+		IID_PPV_ARGS(m_pVB.GetAddressOf())
+	);
+
+	if (FAILED(hr))
+	{
+		return false;
+	}
 }
